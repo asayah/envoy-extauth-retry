@@ -1,0 +1,184 @@
+
+# k create deployment extauth-503 --image=asayah/grpc-extauth-503:latest 
+# kubectl expose deployment extauth-503 --port=80 --target-port=9001
+
+apiVersion: gloo.solo.io/v1
+kind: Upstream
+metadata:
+  name: extauth-503
+  namespace: gloo-system
+spec:
+  discoveryMetadata:
+    labels:
+      app: extauth-503
+  kube:
+    selector:
+      app: extauth-503
+    serviceName: extauth-503
+    serviceNamespace: default
+    servicePort: 80
+    serviceSpec:
+      grpc: {}
+  useHttp2: true
+
+
+---
+
+apiVersion: gateway.solo.io/v1
+kind: VirtualService
+metadata:
+  name: extauth-retry
+  namespace: gloo-system
+spec:
+  virtualHost:
+    domains:
+    - '*'
+    routes:
+    - matchers:
+      - prefix: /
+      routeAction:
+        single:
+          upstream:
+            name: extauth-503
+            namespace: gloo-system
+      options:
+        retries:
+          numRetries: 3
+          perTryTimeout: 10s
+          retryOn: 5xx,cancelled,reset,unavailable,gateway-error,connect-failure
+
+---
+
+apiVersion: gateway.solo.io/v1
+kind: Gateway
+metadata:
+  name: gateway-extauth-retry
+  namespace: gloo-system
+spec:
+  bindAddress: '::'
+  bindPort: 9000
+  httpGateway: 
+    virtualServices:
+    - name: extauth-retry
+      namespace: gloo-system
+  proxyNames:
+  - gateway-proxy
+  useProxyProto: false
+
+
+---
+
+apiVersion: gloo.solo.io/v1
+kind: Upstream
+metadata:
+  name: extauth-retry
+  namespace: gloo-system
+spec:
+  useHttp2: true
+  static:
+    hosts:
+    - addr: 127.0.0.1
+      port: 9000
+
+
+---
+
+
+apiVersion: gloo.solo.io/v1
+kind: Upstream
+metadata:
+  name: echo
+  namespace: gloo-system
+spec:
+  static:
+    hosts:
+    - addr: postman-echo.com
+      port: 80
+
+
+---
+
+apiVersion: gateway.solo.io/v1
+kind: VirtualService
+metadata:
+  name: demo
+  namespace: gloo-system
+spec:
+  virtualHost:
+    options:
+      extauth:
+        customAuth: {}  
+    domains:
+    - '*'
+    routes:
+    - matchers:
+      - prefix: /
+      routeAction:
+        single:
+          upstream:
+            name: echo
+            namespace: gloo-system
+
+---
+
+apiVersion: gateway.solo.io/v1
+kind: Gateway
+metadata:
+  name: gateway-proxy
+  namespace: gloo-system
+spec:
+  bindPort: 8080
+  httpGateway: 
+    virtualServices:
+    - name: demo
+      namespace: gloo-system
+  bindAddress: '::'
+  proxyNames:
+  - gateway-proxy
+  useProxyProto: false
+
+---
+
+apiVersion: gloo.solo.io/v1
+kind: Settings
+metadata:
+  name: default
+  namespace: gloo-system
+spec:
+  discovery:
+    fdsMode: WHITELIST
+  discoveryNamespace: gloo-system
+  extauth:
+    extauthzServerRef:
+      name: extauth-retry
+      namespace: gloo-system
+    transportApiVersion: V3
+    userIdHeader: x-user-id
+  gateway:
+    readGatewaysFromAllNamespaces: false
+    validation:
+      allowWarnings: true
+      alwaysAccept: true
+      disableTransformationValidation: false
+      proxyValidationServerAddr: gloo:9988
+      validationServerGrpcMaxSizeBytes: 4000000
+      warnRouteShortCircuiting: false
+  gloo:
+    disableKubernetesDestinations: false
+    disableProxyGarbageCollection: false
+    enableRestEds: false
+    invalidConfigPolicy:
+      invalidRouteResponseBody: Gloo Gateway has invalid configuration. Administrators
+        should run `glooctl check` to find and fix config errors.
+      invalidRouteResponseCode: 404
+      replaceInvalidRoutes: false
+    restXdsBindAddr: 0.0.0.0:9976
+    xdsBindAddr: 0.0.0.0:9977
+  kubernetesArtifactSource: {}
+  kubernetesConfigSource: {}
+  kubernetesSecretSource: {}
+  ratelimitServer:
+    ratelimitServerRef:
+      name: rate-limit
+      namespace: gloo-system
+  refreshRate: 60s
